@@ -583,7 +583,15 @@ impl TelegramChannel {
     /// each bot reply instead of here.
     fn push_context_entry(&self, chat_id: &str, entry: ContextEntry) {
         let depth = self.context_config.depth;
+        tracing::debug!(
+            chat_id,
+            depth,
+            sender = %entry.sender,
+            text = %entry.text,
+            "push_context_entry called"
+        );
         if depth == 0 {
+            tracing::debug!("context depth is 0, skipping buffer");
             return;
         }
         let mut buffers = self.context_buffers.lock();
@@ -613,10 +621,16 @@ impl TelegramChannel {
     /// Returns `None` when the buffer is empty or context is disabled.
     fn render_context_prefix(&self, chat_id: &str) -> Option<String> {
         if self.context_config.depth == 0 {
+            tracing::debug!("render_context_prefix: depth is 0, returning None");
             return None;
         }
         let buffers = self.context_buffers.lock();
         let buf = buffers.get(chat_id)?;
+        tracing::debug!(
+            chat_id,
+            buffer_len = buf.len(),
+            "render_context_prefix: buffer state"
+        );
         if buf.is_empty() {
             return None;
         }
