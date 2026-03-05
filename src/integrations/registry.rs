@@ -806,6 +806,7 @@ mod tests {
             mention_only: false,
             group_reply: None,
             base_url: None,
+            context: Default::default(),
         });
         let entries = all_integrations();
         let tg = entries.iter().find(|e| e.name == "Telegram").unwrap();

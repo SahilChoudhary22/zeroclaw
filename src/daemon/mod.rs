@@ -406,6 +406,7 @@ mod tests {
             mention_only: false,
             group_reply: None,
             base_url: None,
+            context: Default::default(),
         });
         assert!(has_supervised_channels(&config));
     }
@@ -540,6 +541,7 @@ mod tests {
             mention_only: false,
             group_reply: None,
             base_url: None,
+            context: Default::default(),
         });
 
         let target = heartbeat_delivery_target(&config).unwrap();
