@@ -1,7 +1,7 @@
 use crate::config::schema::{
     default_nostr_relays, DingTalkConfig, IrcConfig, LarkReceiveMode, LinqConfig,
     NextcloudTalkConfig, NostrConfig, QQConfig, QQReceiveMode, SignalConfig, StreamMode,
-    WhatsAppConfig,
+    TelegramContextConfig, WhatsAppConfig,
 };
 use crate::config::{
     AutonomyConfig, BrowserConfig, ChannelsConfig, ComposioConfig, Config, DiscordConfig,
@@ -3839,6 +3839,7 @@ fn setup_channels() -> Result<ChannelsConfig> {
                     mention_only: false,
                     group_reply: None,
                     base_url: None,
+                    context: TelegramContextConfig::default(),
                 });
             }
             ChannelMenuChoice::Discord => {

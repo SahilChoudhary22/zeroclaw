@@ -18,7 +18,7 @@ pub use schema::{
     ResearchTrigger, ResourceLimitsConfig, RuntimeConfig, SandboxBackend, SandboxConfig,
     SchedulerConfig, SecretsConfig, SecurityConfig, SkillsConfig, SkillsPromptInjectionMode,
     SlackConfig, StorageConfig, StorageProviderConfig, StorageProviderSection, StreamMode,
-    SyscallAnomalyConfig, TelegramConfig, TranscriptionConfig, TunnelConfig,
+    SyscallAnomalyConfig, TelegramConfig, TelegramContextConfig, ContextWindowMode, TranscriptionConfig, TunnelConfig,
     WasmCapabilityEscalationMode, WasmModuleHashPolicy, WasmRuntimeConfig, WasmSecurityConfig,
     WebFetchConfig, WebSearchConfig, WebhookConfig,
 };

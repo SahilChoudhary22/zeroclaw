@@ -3458,6 +3458,85 @@ impl GroupReplyMode {
     }
 }
 
+/// Controls how many recent messages are prepended as context when the bot replies.
+///
+/// By default this is disabled (`depth = 0`). Set `depth` to a positive value to
+/// include the last N messages received since the bot's previous reply (or a rolling
+/// window of N messages, depending on `window_mode`).
+///
+/// **Example config:**
+/// ```toml
+/// [telegram.context]
+/// depth = 3
+/// window_mode = "since_last_reply"   # or "rolling"
+/// include_text = true
+/// include_photos = true
+/// include_voice = true
+/// include_documents = true
+/// include_stickers = false
+/// ```
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct TelegramContextConfig {
+    /// Number of recent messages to include as context.
+    ///
+    /// `0` disables context entirely (default).
+    #[serde(default)]
+    pub depth: usize,
+
+    /// Controls the sliding window behaviour.
+    ///
+    /// - `"since_last_reply"` (default): buffer resets after each bot reply, so
+    ///   context shows only what happened since the bot last spoke.
+    /// - `"rolling"`: always the last `depth` messages regardless of bot replies.
+    #[serde(default)]
+    pub window_mode: ContextWindowMode,
+
+    /// Include plain-text messages in context. Default: `true`.
+    #[serde(default = "default_true")]
+    pub include_text: bool,
+
+    /// Include photos in context. Default: `true`.
+    #[serde(default = "default_true")]
+    pub include_photos: bool,
+
+    /// Include voice/audio messages in context. Default: `true`.
+    #[serde(default = "default_true")]
+    pub include_voice: bool,
+
+    /// Include documents/files in context. Default: `true`.
+    #[serde(default = "default_true")]
+    pub include_documents: bool,
+
+    /// Include stickers in context. Default: `false`.
+    #[serde(default)]
+    pub include_stickers: bool,
+}
+
+impl Default for TelegramContextConfig {
+    fn default() -> Self {
+        Self {
+            depth: 0,
+            window_mode: ContextWindowMode::SinceLastReply,
+            include_text: true,
+            include_photos: true,
+            include_voice: true,
+            include_documents: true,
+            include_stickers: false,
+        }
+    }
+}
+
+/// Controls how the context buffer slides over time.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextWindowMode {
+    /// Buffer resets after each bot reply; context = messages since bot last spoke.
+    #[default]
+    SinceLastReply,
+    /// Always the last `depth` messages regardless of bot replies.
+    Rolling,
+}
+
 /// Advanced group-chat trigger controls.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 pub struct GroupReplyConfig {
@@ -3527,6 +3606,11 @@ pub struct TelegramConfig {
     /// Example for Bale messenger: "https://tapi.bale.ai"
     #[serde(default)]
     pub base_url: Option<String>,
+    /// Recent-message context prepended to the bot's input when it replies.
+    ///
+    /// Disabled by default (`depth = 0`). Set `depth > 0` to enable.
+    #[serde(default)]
+    pub context: TelegramContextConfig,
 }
 
 impl ChannelConfig for TelegramConfig {

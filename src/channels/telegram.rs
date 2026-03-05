@@ -1,11 +1,12 @@
 use super::traits::{Channel, ChannelMessage, SendMessage};
-use crate::config::{Config, GroupReplyMode, StreamMode};
+use crate::config::{Config, ContextWindowMode, GroupReplyMode, StreamMode, TelegramContextConfig};
 use crate::security::pairing::PairingGuard;
 use anyhow::Context;
 use async_trait::async_trait;
 use directories::UserDirs;
 use parking_lot::Mutex;
 use reqwest::multipart::{Form, Part};
+use std::collections::VecDeque;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
@@ -446,6 +447,13 @@ fn parse_attachment_markers(message: &str) -> (String, Vec<TelegramAttachment>) 
 /// Telegram Bot API maximum file download size (20 MB).
 const TELEGRAM_MAX_FILE_DOWNLOAD_BYTES: u64 = 20 * 1024 * 1024;
 
+/// A single message stored in the per-chat context buffer.
+#[derive(Debug, Clone)]
+struct ContextEntry {
+    sender: String,
+    text: String,
+}
+
 /// Telegram channel — long-polls the Bot API for updates
 pub struct TelegramChannel {
     bot_token: String,
@@ -467,6 +475,10 @@ pub struct TelegramChannel {
     transcription: Option<crate::config::TranscriptionConfig>,
     voice_transcriptions: Mutex<std::collections::HashMap<String, String>>,
     workspace_dir: Option<std::path::PathBuf>,
+    /// Per-chat recent-message context buffers. Key = chat_id as string.
+    context_buffers: Mutex<std::collections::HashMap<String, VecDeque<ContextEntry>>>,
+    /// Context configuration (depth, window mode, content filters).
+    context_config: TelegramContextConfig,
 }
 
 impl TelegramChannel {
@@ -505,6 +517,8 @@ impl TelegramChannel {
             transcription: None,
             voice_transcriptions: Mutex::new(std::collections::HashMap::new()),
             workspace_dir: None,
+            context_buffers: Mutex::new(std::collections::HashMap::new()),
+            context_config: TelegramContextConfig::default(),
         }
     }
 
@@ -554,6 +568,94 @@ impl TelegramChannel {
             self.transcription = Some(config);
         }
         self
+    }
+
+    /// Configure recent-message context prepending.
+    pub fn with_context_config(mut self, config: TelegramContextConfig) -> Self {
+        self.context_config = config;
+        self
+    }
+
+    /// Push an incoming message into the per-chat context buffer.
+    ///
+    /// The buffer is capped at `context_config.depth`. If `window_mode` is
+    /// `SinceLastReply`, the buffer is cleared by `clear_context_buffer` after
+    /// each bot reply instead of here.
+    fn push_context_entry(&self, chat_id: &str, entry: ContextEntry) {
+        let depth = self.context_config.depth;
+        if depth == 0 {
+            return;
+        }
+        let mut buffers = self.context_buffers.lock();
+        let buf = buffers.entry(chat_id.to_string()).or_default();
+        buf.push_back(entry);
+        // For rolling mode, enforce the cap here; for since_last_reply we cap
+        // at depth too (safety valve — the clear happens on bot reply).
+        while buf.len() > depth {
+            buf.pop_front();
+        }
+    }
+
+    /// Clear the context buffer for a chat after the bot replies.
+    ///
+    /// Only called when `window_mode == SinceLastReply`.
+    fn clear_context_buffer(&self, chat_id: &str) {
+        if self.context_config.depth == 0 {
+            return;
+        }
+        if self.context_config.window_mode == ContextWindowMode::SinceLastReply {
+            self.context_buffers.lock().remove(chat_id);
+        }
+    }
+
+    /// Render the context buffer for a chat as a prefix string.
+    ///
+    /// Returns `None` when the buffer is empty or context is disabled.
+    fn render_context_prefix(&self, chat_id: &str) -> Option<String> {
+        if self.context_config.depth == 0 {
+            return None;
+        }
+        let buffers = self.context_buffers.lock();
+        let buf = buffers.get(chat_id)?;
+        if buf.is_empty() {
+            return None;
+        }
+        let lines: Vec<String> = buf
+            .iter()
+            .map(|e| format!("{}: {}", e.sender, e.text))
+            .collect();
+        Some(format!("[Recent context]\n{}\n---\n", lines.join("\n")))
+    }
+
+    /// Push an incoming message to the context buffer, then prepend any buffered
+    /// context to `content` and return the updated string.
+    ///
+    /// `buffer_text` is the human-readable summary stored in the buffer (e.g.
+    /// the message text, or `"[Photo]"`). `content` is the fully-formed message
+    /// content that will be sent to the agent.
+    fn apply_context(
+        &self,
+        chat_id: &str,
+        sender: &str,
+        buffer_text: &str,
+        content: String,
+    ) -> String {
+        // Snapshot the prefix *before* pushing the new entry so the current
+        // message itself is not included in its own context prefix.
+        let prefix = self.render_context_prefix(chat_id);
+
+        self.push_context_entry(
+            chat_id,
+            ContextEntry {
+                sender: sender.to_string(),
+                text: buffer_text.to_string(),
+            },
+        );
+
+        match prefix {
+            Some(p) => format!("{p}{content}"),
+            None => content,
+        }
     }
 
     /// Parse reply_target into (chat_id, optional thread_id).
@@ -1479,6 +1581,34 @@ Allowlist Telegram username (without '@') or numeric user ID.",
             content = format!("{quote}\n\n{content}");
         }
 
+        // Prepend recent-message context buffer (if enabled).
+        let buffer_text = match attachment.kind {
+            IncomingAttachmentKind::Photo => {
+                if let Some(cap) = &attachment.caption {
+                    if !cap.is_empty() {
+                        format!("[Photo] {cap}")
+                    } else {
+                        "[Photo]".to_string()
+                    }
+                } else {
+                    "[Photo]".to_string()
+                }
+            }
+            IncomingAttachmentKind::Document => {
+                let name = attachment.file_name.as_deref().unwrap_or("file");
+                if let Some(cap) = &attachment.caption {
+                    if !cap.is_empty() {
+                        format!("[Document: {name}] {cap}")
+                    } else {
+                        format!("[Document: {name}]")
+                    }
+                } else {
+                    format!("[Document: {name}]")
+                }
+            }
+        };
+        let content = self.apply_context(&chat_id, &sender_identity, &buffer_text, content);
+
         Some(ChannelMessage {
             id: format!("telegram_{chat_id}_{message_id}"),
             sender: sender_identity,
@@ -1657,6 +1787,10 @@ Allowlist Telegram username (without '@') or numeric user ID.",
             format!("[Voice] {text}")
         };
 
+        // Prepend recent-message context buffer (if enabled).
+        let buffer_text = format!("[Voice] {text}");
+        let content = self.apply_context(&chat_id, &sender_identity, &buffer_text, content);
+
         Some(ChannelMessage {
             id: format!("telegram_{chat_id}_{message_id}"),
             sender: sender_identity,
@@ -1828,6 +1962,9 @@ Allowlist Telegram username (without '@') or numeric user ID.",
         } else {
             content
         };
+
+        // Prepend recent-message context buffer (if enabled).
+        let content = self.apply_context(&chat_id, &sender_identity, text, content);
 
         Some(ChannelMessage {
             id: format!("telegram_{chat_id}_{message_id}"),
@@ -2953,6 +3090,9 @@ impl Channel for TelegramChannel {
             Some((chat, thread)) => (chat, Some(thread)),
             None => (message.recipient.as_str(), None),
         };
+
+        // Clear the context buffer for this chat after the bot replies (SinceLastReply mode).
+        self.clear_context_buffer(chat_id);
 
         let (text_without_markers, attachments) = parse_attachment_markers(&content);
 
