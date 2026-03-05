@@ -148,6 +148,10 @@ pub struct Config {
     #[serde(default)]
     pub agent: AgentConfig,
 
+    /// Multi-workspace routing and registry settings (`[workspaces]`).
+    #[serde(default)]
+    pub workspaces: WorkspacesConfig,
+
     /// Skills loading and community repository behavior (`[skills]`).
     #[serde(default)]
     pub skills: SkillsConfig,
@@ -296,6 +300,50 @@ pub struct ProviderConfig {
     /// (e.g. OpenAI Codex `/responses` reasoning effort).
     #[serde(default)]
     pub reasoning_level: Option<String>,
+}
+
+/// Multi-workspace registry configuration (`[workspaces]`).
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+pub struct WorkspacesConfig {
+    /// Enables in-process workspace registry behavior.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Optional workspace registry root override.
+    /// If omitted, defaults to `<config_dir>/workspaces`.
+    #[serde(default)]
+    pub root: Option<String>,
+}
+
+impl WorkspacesConfig {
+    /// Resolve the workspace registry root from config and runtime context.
+    pub fn resolve_root(&self, config_dir: &Path) -> PathBuf {
+        match self
+            .root
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            Some(value) => {
+                let expanded = shellexpand::tilde(value).into_owned();
+                let path = PathBuf::from(expanded);
+                if path.is_absolute() {
+                    path
+                } else {
+                    config_dir.join(path)
+                }
+            }
+            None => config_dir.join("workspaces"),
+        }
+    }
+}
+
+impl Default for WorkspacesConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            root: None,
+        }
+    }
 }
 
 // ── Delegate Agents ──────────────────────────────────────────────
@@ -4693,6 +4741,7 @@ impl Default for Config {
             reliability: ReliabilityConfig::default(),
             scheduler: SchedulerConfig::default(),
             agent: AgentConfig::default(),
+            workspaces: WorkspacesConfig::default(),
             skills: SkillsConfig::default(),
             model_routes: Vec::new(),
             embedding_routes: Vec::new(),
@@ -5542,6 +5591,22 @@ fn read_codex_openai_api_key() -> Option<String> {
         .map(ToString::to_string)
 }
 
+fn normalize_top_level_table_aliases(raw_toml: &mut toml::Value) {
+    let Some(root) = raw_toml.as_table_mut() else {
+        return;
+    };
+
+    if root.contains_key("Gateway") {
+        if root.contains_key("gateway") {
+            let _ = root.remove("Gateway");
+            tracing::warn!("Legacy table [Gateway] ignored because [gateway] is already present.");
+        } else if let Some(value) = root.remove("Gateway") {
+            root.insert("gateway".to_string(), value);
+            tracing::warn!("Legacy table [Gateway] mapped to [gateway].");
+        }
+    }
+}
+
 impl Config {
     pub async fn load_or_init() -> Result<Self> {
         let (default_zeroclaw_dir, default_workspace_dir) = default_config_and_workspace_dirs()?;
@@ -5579,12 +5644,18 @@ impl Config {
             let contents = fs::read_to_string(&config_path)
                 .await
                 .context("Failed to read config file")?;
+            let mut raw_toml: toml::Value =
+                toml::from_str(&contents).context("Failed to parse config file")?;
+            normalize_top_level_table_aliases(&mut raw_toml);
+            let normalized_contents =
+                toml::to_string(&raw_toml).context("Failed to normalize config file")?;
 
             // Track ignored/unknown config keys to warn users about silent misconfigurations
             // (e.g., using [providers.ollama] which doesn't exist instead of top-level api_url)
             let mut ignored_paths: Vec<String> = Vec::new();
             let mut config: Config = serde_ignored::deserialize(
-                toml::de::Deserializer::parse(&contents).context("Failed to parse config file")?,
+                toml::de::Deserializer::parse(&normalized_contents)
+                    .context("Failed to parse config file")?,
                 |path| {
                     ignored_paths.push(path.to_string());
                 },
@@ -7010,6 +7081,7 @@ default_temperature = 0.7
             scheduler: SchedulerConfig::default(),
             coordination: CoordinationConfig::default(),
             skills: SkillsConfig::default(),
+            workspaces: WorkspacesConfig::default(),
             model_routes: Vec::new(),
             embedding_routes: Vec::new(),
             query_classification: QueryClassificationConfig::default(),
@@ -7416,6 +7488,7 @@ tool_dispatcher = "xml"
             scheduler: SchedulerConfig::default(),
             coordination: CoordinationConfig::default(),
             skills: SkillsConfig::default(),
+            workspaces: WorkspacesConfig::default(),
             model_routes: Vec::new(),
             embedding_routes: Vec::new(),
             query_classification: QueryClassificationConfig::default(),
@@ -8448,6 +8521,25 @@ default_temperature = 0.7
         assert!(
             !parsed.gateway.allow_public_bind,
             "Missing [gateway] must default to allow_public_bind=false"
+        );
+    }
+
+    #[test]
+    async fn checklist_gateway_backward_compat_accepts_legacy_gateway_table_alias() {
+        let mut raw: toml::Value = toml::from_str(
+            r#"
+default_temperature = 0.7
+[Gateway]
+require_pairing = false
+"#,
+        )
+        .unwrap();
+
+        normalize_top_level_table_aliases(&mut raw);
+        let parsed: Config = raw.try_into().unwrap();
+        assert!(
+            !parsed.gateway.require_pairing,
+            "Legacy [Gateway] alias should map to [gateway]"
         );
     }
 
@@ -10459,5 +10551,31 @@ baseline_syscalls = ["read", "write", "openat", "close"]
         config
             .validate()
             .expect("disabled coordination should allow empty lead agent");
+    }
+
+    #[test]
+    async fn workspaces_config_defaults_disabled() {
+        let config = Config::default();
+        assert!(!config.workspaces.enabled);
+        assert!(config.workspaces.root.is_none());
+    }
+
+    #[test]
+    async fn workspaces_config_resolve_root_default_and_relative_override() {
+        let config_dir = std::path::PathBuf::from("/tmp/zeroclaw-config-root");
+        let default_cfg = WorkspacesConfig::default();
+        assert_eq!(
+            default_cfg.resolve_root(&config_dir),
+            config_dir.join("workspaces")
+        );
+
+        let relative_cfg = WorkspacesConfig {
+            enabled: true,
+            root: Some("profiles".into()),
+        };
+        assert_eq!(
+            relative_cfg.resolve_root(&config_dir),
+            config_dir.join("profiles")
+        );
     }
 }
