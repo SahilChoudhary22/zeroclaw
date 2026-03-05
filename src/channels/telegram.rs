@@ -1483,6 +1483,35 @@ Allowlist Telegram username (without '@') or numeric user ID.",
                         .map(|id| Self::is_reply_to_bot(message, id))
                         .unwrap_or(false);
                 if !has_mention && !is_reply {
+                    // Buffer this silent attachment so it appears as context
+                    // when the bot is next mentioned in this chat.
+                    if let Some(chat_id) = message
+                        .get("chat")
+                        .and_then(|c| c.get("id"))
+                        .and_then(serde_json::Value::as_i64)
+                        .map(|id| id.to_string())
+                    {
+                        let label = match attachment.kind {
+                            IncomingAttachmentKind::Photo => "[Photo]",
+                            IncomingAttachmentKind::Document => "[Document]",
+                        };
+                        let buffer_text = if let Some(cap) = attachment.caption.as_deref() {
+                            if !cap.is_empty() {
+                                format!("{label}: {cap}")
+                            } else {
+                                label.to_string()
+                            }
+                        } else {
+                            label.to_string()
+                        };
+                        self.push_context_entry(
+                            &chat_id,
+                            ContextEntry {
+                                sender: sender_identity.clone(),
+                                text: buffer_text,
+                            },
+                        );
+                    }
                     return None;
                 }
             } else {
@@ -1690,6 +1719,22 @@ Allowlist Telegram username (without '@') or numeric user ID.",
                     .map(|id| Self::is_reply_to_bot(message, id))
                     .unwrap_or(false);
             if !is_reply {
+                // Buffer this silent voice message so it appears as context
+                // when the bot is next mentioned in this chat.
+                if let Some(chat_id) = message
+                    .get("chat")
+                    .and_then(|c| c.get("id"))
+                    .and_then(serde_json::Value::as_i64)
+                    .map(|id| id.to_string())
+                {
+                    self.push_context_entry(
+                        &chat_id,
+                        ContextEntry {
+                            sender: sender_identity.clone(),
+                            text: "[Voice message]".to_string(),
+                        },
+                    );
+                }
                 return None;
             }
         }
@@ -1912,6 +1957,22 @@ Allowlist Telegram username (without '@') or numeric user ID.",
                         .map(|id| Self::is_reply_to_bot(message, id))
                         .unwrap_or(false);
                 if !has_mention && !is_reply {
+                    // Buffer this silent group message so it appears as context
+                    // when the bot is next mentioned in this chat.
+                    if let Some(chat_id) = message
+                        .get("chat")
+                        .and_then(|c| c.get("id"))
+                        .and_then(serde_json::Value::as_i64)
+                        .map(|id| id.to_string())
+                    {
+                        self.push_context_entry(
+                            &chat_id,
+                            ContextEntry {
+                                sender: sender_identity.clone(),
+                                text: text.to_string(),
+                            },
+                        );
+                    }
                     return None;
                 }
             } else {
