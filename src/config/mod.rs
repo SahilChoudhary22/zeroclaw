@@ -15,7 +15,8 @@ pub use schema::{
     QdrantConfig, QueryClassificationConfig, ReliabilityConfig, ResourceLimitsConfig,
     RuntimeConfig, SandboxBackend, SandboxConfig, SchedulerConfig, SecretsConfig, SecurityConfig,
     SkillsConfig, SkillsPromptInjectionMode, SlackConfig, StorageConfig, StorageProviderConfig,
-    StorageProviderSection, StreamMode, TelegramConfig, TranscriptionConfig, TunnelConfig,
+    StorageProviderSection, GroupReplyConfig, GroupReplyMode, StreamMode, TelegramConfig,
+    TranscriptionConfig, TunnelConfig,
     WebFetchConfig, WebSearchConfig, WebhookConfig,
 };
 
@@ -45,6 +46,8 @@ mod tests {
             draft_update_interval_ms: 1000,
             interrupt_on_new_message: false,
             mention_only: false,
+            group_reply: None,
+            base_url: None,
         };
 
         let discord = DiscordConfig {
